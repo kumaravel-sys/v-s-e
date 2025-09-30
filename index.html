@@ -1,0 +1,686 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>School ShareMarket — Demo (Firebase + Finnhub + TradingView)</title>
+
+  <!-- Tailwind for UI -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Chart.js + financial candlestick plugin (fallback) -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-financial@3.3.0/dist/chartjs-chart-financial.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@2.0.0/dist/chartjs-adapter-date-fns.min.js"></script>
+
+  <style>
+    body{background:#07111b;color:#e6eef6;font-family:Inter,system-ui,Arial}
+    .muted{color:#9aa4b2}.card{background:linear-gradient(180deg,#071225,#071725);padding:14px;border-radius:12px;border:1px solid rgba(255,255,255,0.03)}
+    .input{background:transparent;border:1px solid rgba(255,255,255,0.06);padding:8px;border-radius:8px;color:inherit}
+    .btn{background:#09c372;color:#04211a;padding:8px 12px;border-radius:8px;font-weight:600}
+    .btn-ghost{background:transparent;border:1px solid rgba(255,255,255,0.06);padding:8px 12px;border-radius:8px;color:inherit}
+    .overlay{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(2,6,23,0.7);z-index:60}
+    .hidden{display:none}
+    .small{font-size:13px}
+    .stock-row{cursor:pointer;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.02);margin-bottom:8px}
+    .stock-row:hover{background:rgba(255,255,255,0.02)}
+  </style>
+</head>
+<body>
+
+<header class="p-4 flex justify-between items-center">
+  <div>
+    <h1 class="text-xl font-bold">School ShareMarket</h1>
+    <div class="muted small">Demo — Live charts & fundamentals</div>
+  </div>
+  <div class="flex items-center gap-3">
+    <label class="muted small">Background</label>
+    <input id="bgColor" type="color" value="#07111b"/>
+    <button id="btnOpenAdmin" class="btn-ghost small">Admin</button>
+  </div>
+</header>
+
+<main class="p-4 max-w-7xl mx-auto">
+  <div class="grid md:grid-cols-3 gap-4">
+    <!-- Sidebar -->
+    <aside class="card">
+      <div class="flex justify-between items-center">
+        <div><div class="muted small">User</div><div id="uiName" class="font-semibold">—</div></div>
+        <div class="muted small" id="uiBalance">₹0</div>
+      </div>
+
+      <div class="mt-4">
+        <input id="searchInput" class="input w-full" placeholder="Search company or symbol — e.g. RELIANCE or AAPL"/>
+        <div class="flex gap-2 mt-2"><button id="btnSearch" class="btn">Search</button><button id="btnPortfolio" class="btn-ghost">Portfolio</button></div>
+      </div>
+
+      <div class="mt-4 muted small">Top Stocks</div>
+      <div id="stockList" class="mt-3" style="max-height:60vh;overflow:auto"></div>
+
+      <div class="mt-4 muted small">Admin</div>
+      <div class="mt-2"><button id="btnAdminPanel" class="btn-ghost">Open admin panel</button></div>
+    </aside>
+
+    <!-- Chart & trading -->
+    <section class="md:col-span-2 card">
+      <div class="flex justify-between items-start">
+        <div><div id="selName" class="text-xl font-semibold">Select a stock</div><div id="selSymbol" class="muted small">---</div></div>
+        <div class="flex items-center gap-2">
+          <select id="chartRange" class="input small"><option value="1M">1M</option><option value="3M">3M</option><option value="6M">6M</option><option value="1Y">1Y</option><option value="MAX">MAX</option></select>
+          <button id="btnLogout" class="btn-ghost">Logout</button>
+        </div>
+      </div>
+
+      <div id="chartArea" class="mt-4">
+        <div id="tv_container" style="height:480px"></div>
+        <canvas id="fallbackCanvas" class="hidden" style="width:100%;height:480px"></canvas>
+      </div>
+
+      <div class="mt-4 grid grid-cols-3 gap-4">
+        <div class="col-span-1 card">
+          <div class="muted small">Live Price</div>
+          <div id="livePrice" class="text-2xl font-bold">—</div>
+          <div id="priceChange" class="muted small">—</div>
+
+          <div class="mt-3 muted small">Quick trade</div>
+          <div class="flex gap-2 mt-2">
+            <input id="tradeQty" type="number" min="1" value="1" class="input w-24 small"/>
+            <button id="btnBuy" class="btn small">Buy</button>
+            <button id="btnSell" class="btn small" style="background:#ff6b6b;color:#280000">Sell</button>
+          </div>
+          <div id="tradeMsg" class="muted small mt-2"></div>
+        </div>
+
+        <div class="col-span-2 card">
+          <div class="muted small">Company profile & fundamentals</div>
+          <div id="companyInfo" class="mt-2 muted small">—</div>
+          <div class="mt-4 muted small">Recent transactions</div>
+          <div id="txArea" style="max-height:240px;overflow:auto;margin-top:8px"></div>
+        </div>
+      </div>
+    </section>
+  </div>
+</main>
+
+<!-- TradingView -->
+<script src="https://s3.tradingview.com/tv.js"></script>
+
+<!-- Firebase + app logic -->
+<script type="module">
+/* ================== CONFIG - REPLACE BEFORE DEPLOY ==================
+   1) Put your Firebase web config here (from Firebase Console -> Project settings -> SDK).
+   2) Put your Finnhub key below (you gave: d3bm7n1r01qqg7bv706gd3bm7n1r01qqg7bv7070).
+   3) Set ADMIN_EMAIL to the admin email you will create in Firebase Auth (must be a valid email).
+   4) Set SCHOOL_CODE to the secret code students must use to register (e.g. "vse2k25").
+=================================================================== */
+const FIREBASE_CONFIG = {
+  // Import the functions you need from the SDKs you need
+import { initializeApp } from "firebase/app";
+// TODO: Add SDKs for Firebase products that you want to use
+// https://firebase.google.com/docs/web/setup#available-libraries
+
+// Your web app's Firebase configuration
+const firebaseConfig = {
+  apiKey: "AIzaSyAHz5jZa18PhxIlpKb7NkVmU6-kHW6i-gU",
+  authDomain: "v-s-e-3814a.firebaseapp.com",
+  projectId: "v-s-e-3814a",
+  storageBucket: "v-s-e-3814a.firebasestorage.app",
+  messagingSenderId: "477666522205",
+  appId: "1:477666522205:web:c542d4989ab575cb9709b4"
+};
+
+// Initialize Firebase
+const app = initializeApp(firebaseConfig);
+
+const FINNHUB_KEY = "d3bm7n1r01qqg7bv706gd3bm7n1r01qqg7bv7070"; // <-- your Finnhub key
+const ADMIN_EMAIL = "admin6@vse.com"; // <-- change to real admin email you will create
+const SCHOOL_CODE = "vse2k25";           // <-- site access code for registration
+const STARTING_BALANCE = 50000;
+
+/* ================== END CONFIG ================== */
+
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.3/firebase-app.js";
+import {
+  getAuth,
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  signOut,
+  onAuthStateChanged,
+  updateProfile
+} from "https://www.gstatic.com/firebasejs/10.12.3/firebase-auth.js";
+
+import {
+  getFirestore,
+  doc,
+  getDoc,
+  setDoc,
+  updateDoc,
+  collection,
+  getDocs,
+  runTransaction,
+  serverTimestamp
+} from "https://www.gstatic.com/firebasejs/10.12.3/firebase-firestore.js";
+
+/* Initialize Firebase */
+const app = initializeApp(FIREBASE_CONFIG);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+/* UI refs */
+const stockListEl = document.getElementById('stockList');
+const btnSearch = document.getElementById('btnSearch');
+const searchInput = document.getElementById('searchInput');
+const selNameEl = document.getElementById('selName');
+const selSymbolEl = document.getElementById('selSymbol');
+const livePriceEl = document.getElementById('livePrice');
+const priceChangeEl = document.getElementById('priceChange');
+const companyInfoEl = document.getElementById('companyInfo');
+const txAreaEl = document.getElementById('txArea');
+const btnBuy = document.getElementById('btnBuy');
+const btnSell = document.getElementById('btnSell');
+const qtyEl = document.getElementById('tradeQty');
+const tradeMsgEl = document.getElementById('tradeMsg');
+const chartRangeEl = document.getElementById('chartRange');
+const tvContainer = document.getElementById('tv_container');
+const fallbackCanvas = document.getElementById('fallbackCanvas');
+
+const uiName = document.getElementById('uiName');
+const uiBalance = document.getElementById('uiBalance');
+const btnLogout = document.getElementById('btnLogout');
+const btnPortfolio = document.getElementById('btnPortfolio');
+const bgColor = document.getElementById('bgColor');
+const btnOpenAdmin = document.getElementById('btnOpenAdmin');
+const btnAdminPanel = document.getElementById('btnAdminPanel');
+
+/* Trading + state */
+let currentUser = null; // firebase user object
+let selectedStock = null; // { fhSymbol: 'RELIANCE.NS', tvSymbol: 'NSE:RELIANCE' }
+let tvWidget = null;
+let fallbackChart = null;
+
+/* Default top-10 Indian companies (root symbols). Admin can edit names via Firestore 'config/stocks' doc. */
+const DEFAULT_TOP10 = ["RELIANCE","TCS","INFY","HDFCBANK","SBIN","ICICIBANK","AXISBANK","HINDUNILVR","BHARTIARTL","WIPRO"];
+
+/* --- event wiring --- */
+bgColor.addEventListener('input', e => document.body.style.background = e.target.value);
+btnSearch.addEventListener('click', onSearch);
+searchInput.addEventListener('keyup', e => { if(e.key === 'Enter') onSearch(); });
+chartRangeEl.addEventListener('change', ()=>{ if(selectedStock) drawCandles(selectedStock.fhSymbol, chartRangeEl.value); });
+btnBuy.addEventListener('click', ()=> doTrade('BUY'));
+btnSell.addEventListener('click', ()=> doTrade('SELL'));
+btnLogout.addEventListener('click', ()=> signOut(auth));
+btnPortfolio.addEventListener('click', showPortfolioWindow);
+btnOpenAdmin.addEventListener('click', showAdminLogin);
+btnAdminPanel.addEventListener('click', showAdminPanel);
+
+/* --- Auth state handling --- */
+onAuthStateChanged(auth, async user => {
+  currentUser = user;
+  if(user){
+    // ensure user doc exists
+    const uRef = doc(db,'users', user.uid);
+    const uSnap = await getDoc(uRef);
+    if(!uSnap.exists()){
+      await setDoc(uRef, {
+        name: user.displayName || user.email.split('@')[0],
+        email: user.email,
+        balance: STARTING_BALANCE,
+        holdings: {},
+        trades: [],
+        createdAt: serverTimestamp()
+      });
+    }
+    uiName.textContent = (user.displayName || user.email.split('@')[0]);
+    await refreshUserUI();
+  } else {
+    // show login/register modal flow
+    showLoginRegisterModal();
+  }
+});
+
+/* ========== INITIALIZE: load top list ========== */
+(async function init(){
+  await ensureStocksConfig();
+  await renderTopStocks();
+})();
+
+/* ========== FIRESTORE: ensure config/stocks doc ==========
+   structure: config/stocks { list: [ { symbol: "RELIANCE.NS", display:"Reliance Industries" }, ... ] }
+====================================================== */
+async function ensureStocksConfig(){
+  const cfgRef = doc(db,'config','stocks');
+  const snap = await getDoc(cfgRef);
+  if(!snap.exists()){
+    // create default list
+    const list = DEFAULT_TOP10.map(s => ({ symbol: s + '.NS', display: s }));
+    await setDoc(cfgRef, { list });
+  }
+}
+
+/* load config stocks and render */
+async function renderTopStocks(){
+  stockListEl.innerHTML = '';
+  const cfgRef = doc(db,'config','stocks');
+  const cfgSnap = await getDoc(cfgRef);
+  const stocks = (cfgSnap.exists() && cfgSnap.data().list) ? cfgSnap.data().list : DEFAULT_TOP10.map(s=>({symbol: s+'.NS', display: s}));
+  for(const st of stocks){
+    const price = await safeFetchQuote(st.symbol).then(r => r?.c || 0).catch(()=>0);
+    const div = document.createElement('div');
+    div.className = 'stock-row';
+    div.innerHTML = `<div class="flex justify-between items-center"><div><strong>${st.display}</strong><div class="muted small">${st.symbol}</div></div><div class="text-right"><div>₹${(price||0).toFixed(2)}</div><div class="muted small">Live</div></div></div>`;
+    div.addEventListener('click', ()=> loadStock(st.symbol));
+    stockListEl.appendChild(div);
+  }
+}
+
+/* ========== SEARCH ========= */
+async function onSearch(){
+  const q = searchInput.value.trim();
+  if(!q) return alert('Type company name or symbol');
+  // use Finnhub search
+  const res = await fhSearch(q);
+  if(!res || !res.result || res.result.length === 0) return alert('No results');
+  // show up to 8 results for selection
+  const results = res.result.slice(0,8);
+  const choice = await showChoiceDialog(results.map(r => ({title:`${r.description || r.symbol}`, value: r.symbol })), 'Pick a symbol');
+  if(choice) loadStock(choice);
+}
+
+/* minimal choice modal: returns selected symbol string or null */
+function showChoiceDialog(items, title='Choose'){
+  return new Promise(resolve => {
+    const modal = document.createElement('div'); modal.className = 'overlay';
+    modal.innerHTML = `<div class="card" style="max-width:640px; width:100%; max-height:80vh; overflow:auto"><h3 class="text-lg font-bold">${title}</h3><div id="choices" style="margin-top:8px"></div><div style="margin-top:12px" class="flex gap-2"><button id="closeChoice" class="btn-ghost">Cancel</button></div></div>`;
+    document.body.appendChild(modal);
+    const choicesEl = modal.querySelector('#choices');
+    items.forEach(it => {
+      const b = document.createElement('div');
+      b.className = 'p-2 stock-row';
+      b.textContent = it.title + '  (' + it.value + ')';
+      b.addEventListener('click', ()=> { cleanup(it.value); });
+      choicesEl.appendChild(b);
+    });
+    modal.querySelector('#closeChoice').addEventListener('click', ()=> cleanup(null));
+    function cleanup(val){
+      modal.remove();
+      resolve(val);
+    }
+  });
+}
+
+/* ===== Finnhub search & helpers ===== */
+async function fhSearch(q){
+  try{
+    const r = await fetch(`https://finnhub.io/api/v1/search?q=${encodeURIComponent(q)}&token=${FINNHUB_KEY}`);
+    return await r.json();
+  }catch(e){ console.warn(e); return null; }
+}
+
+async function safeFetchQuote(sym){
+  try{
+    const r = await fetch(`https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(sym)}&token=${FINNHUB_KEY}`);
+    if(!r.ok) return null;
+    return await r.json();
+  }catch(e){ console.warn(e); return null; }
+}
+
+async function fetchProfile(sym){
+  try{
+    const r = await fetch(`https://finnhub.io/api/v1/stock/profile2?symbol=${encodeURIComponent(sym)}&token=${FINNHUB_KEY}`);
+    if(!r.ok) return null;
+    return await r.json();
+  }catch(e){ console.warn(e); return null; }
+}
+
+async function fetchMetric(sym){
+  try{
+    const r = await fetch(`https://finnhub.io/api/v1/stock/metric?symbol=${encodeURIComponent(sym)}&metric=all&token=${FINNHUB_KEY}`);
+    if(!r.ok) return null;
+    return await r.json();
+  }catch(e){ console.warn(e); return null; }
+}
+
+async function fetchCandles(sym, from, to, resolution='D'){
+  try{
+    const r = await fetch(`https://finnhub.io/api/v1/stock/candle?symbol=${encodeURIComponent(sym)}&resolution=${resolution}&from=${from}&to=${to}&token=${FINNHUB_KEY}`);
+    if(!r.ok) return null;
+    return await r.json();
+  }catch(e){ console.warn(e); return null; }
+}
+
+/* ========== LOAD STOCK (selected) ===========
+   fhSymbol is the Finnhub symbol (e.g. RELIANCE.NS or AAPL)
+   we try to get exchange from profile and build TradingView symbol 'EXCHANGE:ROOT'
+================================================= */
+async function loadStock(fhSymbol){
+  // fhSymbol might be 'AAPL' or 'RELIANCE.NS'
+  const profile = await fetchProfile(fhSymbol);
+  // determine exchange for TradingView
+  let exchange = profile?.exchange || inferExchange(fhSymbol);
+  // root symbol without suffix
+  const root = fhSymbol.replace('.NS','').replace('.BSE','').replace('.L','');
+  const tvSymbol = exchange ? `${exchange}:${root}` : root;
+  selectedStock = { fhSymbol, tvSymbol, root };
+
+  // update UI
+  selNameEl.textContent = profile?.name || root;
+  selSymbolEl.textContent = fhSymbol;
+
+  // update quote
+  const quote = await safeFetchQuote(fhSymbol);
+  if(quote){
+    livePriceEl.textContent = '₹' + (quote.c || 0).toFixed(2);
+    priceChangeEl.textContent = `${quote.d >= 0 ? '▲' : '▼'} ${(quote.d||0).toFixed(2)} (${(quote.dp||0).toFixed(2)}%)`;
+    priceChangeEl.style.color = quote.d >= 0 ? '#3ee27a' : '#ff7b7b';
+  } else { livePriceEl.textContent = '—'; priceChangeEl.textContent = '—'; }
+
+  // fundamentals
+  const metric = await fetchMetric(fhSymbol);
+  companyInfoEl.innerHTML = `<div><strong>${profile?.name || fhSymbol}</strong> <div class="muted small">${profile?.finnhubIndustry || ''}</div></div>
+    <div class="mt-2">Market Cap: ${metric?.metric?.marketCapitalization ?? 'N/A'}</div>
+    <div>P/E: ${metric?.metric?.peNormalizedAnnual ?? 'N/A'}</div>
+    <div>EPS: ${metric?.metric?.epsNormalizedAnnual ?? 'N/A'}</div>`;
+
+  // load TradingView widget; fallback to Chart.js if not available
+  await loadTradingViewWithFallback(tvSymbol, fhSymbol);
+
+  // update user tx area
+  await renderUserTrades();
+}
+
+/* infer exchange from symbol */
+function inferExchange(sym){
+  if(sym.endsWith('.NS')) return 'NSE';
+  if(sym.endsWith('.BSE')) return 'BSE';
+  // if US style (uppercase root) return NASDAQ (best-effort)
+  if(/^[A-Z]{1,5}$/.test(sym)) return 'NASDAQ';
+  return '';
+}
+
+/* ========== TradingView + fallback ========= */
+async function loadTradingViewWithFallback(tvSymbol, fhSymbol){
+  // clear
+  tvContainer.innerHTML = '';
+  fallbackCanvas.classList.add('hidden');
+
+  // create new container
+  const widgetDiv = document.createElement('div');
+  widgetDiv.id = 'tvwidget';
+  widgetDiv.style.height = '480px';
+  tvContainer.appendChild(widgetDiv);
+
+  try{
+    tvWidget = new TradingView.widget({
+      container_id: "tvwidget",
+      width: "100%",
+      height: 480,
+      symbol: tvSymbol,
+      interval: "D",
+      timezone: "Asia/Kolkata",
+      theme: "light",
+      style: "1",
+      locale: "en",
+      toolbar_bg: "#0b1220",
+      enable_publishing: false,
+      allow_symbol_change: true
+    });
+  }catch(e){
+    console.warn('TradingView init error', e);
+  }
+
+  // if TradingView doesn't inject iframe in a few seconds, fallback
+  setTimeout(async ()=>{
+    const iframe = document.getElementById('tvwidget')?.querySelector('iframe');
+    if(!iframe){
+      // draw candles via Finnhub
+      await drawCandles(fhSymbol, chartRangeEl.value);
+      fallbackCanvas.classList.remove('hidden');
+    } else {
+      fallbackCanvas.classList.add('hidden');
+    }
+  }, 3500);
+}
+
+/* draw candles from Finnhub */
+async function drawCandles(fhSymbol, range){
+  const now = Math.floor(Date.now()/1000);
+  let days = 365;
+  if(range === '1M') days = 30;
+  if(range === '3M') days = 90;
+  if(range === '6M') days = 180;
+  if(range === '1Y') days = 365;
+  if(range === 'MAX') days = 365*3;
+  const from = now - days*24*3600;
+  const data = await fetchCandles(fhSymbol, from, now, 'D');
+  if(!data || data.s !== 'ok' || !data.t) { console.warn('no candle data'); return; }
+  const candles = data.t.map((t,i)=>({ x: new Date(t*1000), o: data.o[i], h: data.h[i], l: data.l[i], c: data.c[i] }));
+  const ctx = fallbackCanvas.getContext('2d');
+  if(fallbackChart) fallbackChart.destroy();
+  fallbackChart = new Chart(ctx, {
+    type: 'candlestick',
+    data: { datasets: [{ label: fhSymbol, data: candles }] },
+    options: { plugins: { legend: { display: false } }, scales: { x: { type: 'time' }, y: { position: 'right' } }, maintainAspectRatio: false }
+  });
+}
+
+/* ========== TRADING (Firestore transaction) ========= */
+async function doTrade(type){
+  if(!currentUser) return alert('Please sign in first');
+  if(!selectedStock) return alert('Select a stock first');
+  const qty = Number(qtyEl.value);
+  if(!qty || qty <= 0) return alert('Enter valid quantity');
+
+  // fetch live price
+  const q = await safeFetchQuote(selectedStock.fhSymbol);
+  const price = q?.c;
+  if(!price) return alert('Live price unavailable');
+
+  const userRef = doc(db, 'users', currentUser.uid);
+  try{
+    await runTransaction(db, async (t) => {
+      const uDoc = await t.get(userRef);
+      if(!uDoc.exists()) throw 'User not found';
+      const data = uDoc.data();
+      let balance = Number(data.balance || 0);
+      const holdings = Object.assign({}, data.holdings || {});
+      if(type === 'BUY'){
+        const cost = price * qty;
+        if(balance < cost) throw 'Insufficient balance';
+        balance = Number((balance - cost).toFixed(2));
+        holdings[selectedStock.fhSymbol] = (holdings[selectedStock.fhSymbol] || 0) + qty;
+        const tradeObj = { type:'BUY', symbol: selectedStock.fhSymbol, qty, price, time: new Date() };
+        t.update(userRef, { balance, holdings, trades: (data.trades || []).concat([tradeObj]) });
+      } else {
+        const owned = holdings[selectedStock.fhSymbol] || 0;
+        if(owned < qty) throw 'Not enough shares';
+        holdings[selectedStock.fhSymbol] = owned - qty;
+        balance = Number((balance + price*qty).toFixed(2));
+        const tradeObj = { type:'SELL', symbol: selectedStock.fhSymbol, qty, price, time: new Date() };
+        t.update(userRef, { balance, holdings, trades: (data.trades || []).concat([tradeObj]) });
+      }
+    });
+    tradeMsgEl.textContent = `${type === 'BUY' ? 'Bought' : 'Sold'} ${qty} @ ₹${price.toFixed(2)}`;
+    await refreshUserUI();
+    await renderUserTrades();
+  }catch(e){
+    console.error('trade error', e);
+    alert('Trade failed: ' + e);
+  }
+}
+
+/* ========== USER UI helpers ========== */
+async function refreshUserUI(){
+  if(!currentUser) return;
+  const uRef = doc(db,'users', currentUser.uid);
+  const uSnap = await getDoc(uRef);
+  if(!uSnap.exists()) return;
+  const ud = uSnap.data();
+  uiBalance.textContent = '₹' + (ud.balance || 0).toFixed(2);
+  uiName.textContent = ud.name || currentUser.email.split('@')[0] || '';
+}
+
+async function renderUserTrades(){
+  if(!currentUser) { txAreaEl.innerHTML = ''; return; }
+  const uRef = doc(db,'users', currentUser.uid);
+  const uSnap = await getDoc(uRef);
+  if(!uSnap.exists()) return;
+  const ud = uSnap.data();
+  const trades = ud.trades || [];
+  txAreaEl.innerHTML = trades.slice(-12).reverse().map(t => {
+    const time = (t.time && t.time.toDate) ? t.time.toDate().toLocaleString() : (new Date(t.time)).toLocaleString();
+    return `<div class="muted small">${time} — ${t.type} ${t.qty} ${t.symbol} @ ₹${Number(t.price).toFixed(2)}</div>`;
+  }).join('') || '<div class="muted small">No trades yet</div>';
+}
+
+/* ========== PORTFOLIO pop-up (simple window) ========== */
+async function showPortfolioWindow(){
+  if(!currentUser) return alert('Login first');
+  const uRef = doc(db,'users', currentUser.uid);
+  const uSnap = await getDoc(uRef);
+  if(!uSnap.exists()) return alert('No user doc');
+  const ud = uSnap.data();
+  let html = `<div style="padding:12px;font-family:Inter,system-ui,Arial;color:#e6eef6;background:#07111b"><h2>${ud.name || ud.email}</h2><div class="muted small">Balance: ₹${(ud.balance||0).toFixed(2)}</div><h3>Holdings</h3>`;
+  for(const s in (ud.holdings||{})){
+    const qty = ud.holdings[s] || 0;
+    if(qty <= 0) continue;
+    html += `<div>${s} — ${qty}</div>`;
+  }
+  html += '<h3 class="mt-2">Recent trades</h3>';
+  (ud.trades || []).slice(-20).reverse().forEach(t => {
+    const ts = (t.time && t.time.toDate) ? t.time.toDate().toLocaleString() : new Date(t.time).toLocaleString();
+    html += `<div class="muted small">${ts} — ${t.type} ${t.qty} ${t.symbol} @ ₹${Number(t.price).toFixed(2)}</div>`;
+  });
+  html += '</div>';
+  const w = window.open('', '_blank', 'width=700,height=600');
+  w.document.body.style.background = '#07111b';
+  w.document.body.style.color = '#e6eef6';
+  w.document.title = 'Portfolio';
+  w.document.body.innerHTML = html;
+}
+
+/* ========== ADMIN: login prompt & panel ========= */
+async function showAdminLogin(){
+  const email = prompt('Admin email:');
+  const pass = prompt('Admin password:');
+  if(!email || !pass) return;
+  try{
+    await signInWithEmailAndPassword(auth, email, pass);
+    alert('Admin signed in');
+  }catch(e){ alert('Admin sign in failed: ' + e.message); }
+}
+
+async function showAdminPanel(){
+  // ensure admin
+  if(!currentUser) return showAdminLogin();
+  if(currentUser.email !== ADMIN_EMAIL) return alert('Only admin can open this panel');
+  // fetch all users and compute net worth (balance + holdings market value)
+  const usersSnap = await getDocs(collection(db, 'users'));
+  const rows = [];
+  for(const uDoc of usersSnap.docs){
+    const ud = uDoc.data();
+    let net = ud.balance || 0;
+    const holdings = ud.holdings || {};
+    for(const sym in holdings){
+      const qty = holdings[sym] || 0;
+      if(qty <= 0) continue;
+      const q = await safeFetchQuote(sym).catch(()=>null);
+      const p = q?.c || 0;
+      net += p * qty;
+    }
+    rows.push({ id: uDoc.id, name: ud.name || ud.email, email: ud.email, net: Math.round(net), holdings: ud.holdings || {}, trades: ud.trades || [] });
+  }
+  // sort descending by net
+  rows.sort((a,b)=>b.net - a.net);
+  // show in new window
+  let html = `<div style="padding:12px;font-family:Inter,system-ui,Arial;color:#e6eef6;background:#07111b"><h2>Admin Panel — Leaderboard</h2>`;
+  html += `<h3>Top Users</h3>`;
+  html += rows.map((r,i) => `<div style="padding:6px;border-bottom:1px solid rgba(255,255,255,0.03)">${i+1}. ${r.name} — ₹${r.net.toLocaleString()}</div>`).join('');
+  html += `<h3 class="mt-4">All users detail</h3>`;
+  rows.forEach(r => {
+    html += `<div style="padding:8px;border:1px solid rgba(255,255,255,0.03);margin-top:8px"><strong>${r.name}</strong> (${r.email})<br>Net: ₹${r.net.toLocaleString()}<br>Holdings: ${JSON.stringify(r.holdings)}<br>Trades: ${r.trades.length}</div>`;
+  });
+  html += '</div>';
+  const w = window.open('', '_blank', 'width=900,height=700');
+  w.document.body.style.background = '#07111b';
+  w.document.body.style.color = '#e6eef6';
+  w.document.title = 'Admin Panel';
+  w.document.body.innerHTML = html;
+}
+
+/* ========== small helpers ========== */
+async function loadStockBySearchResult(symbol){
+  // helper if symbol returned from search is like 'RELIANCE.NS'
+  await loadStock(symbol);
+}
+
+function makeTVSymbolFromFH(fhSymbol, profileExchange){
+  // fhSymbol like RELIANCE.NS -> root RELIANCE -> exchange NSE -> TV uses 'NSE:RELIANCE'
+  // profileExchange may be 'NSE' or 'NASDAQ' etc.
+  const root = fhSymbol.replace('.NS','').replace('.BSE','').replace('.L','');
+  const exchange = profileExchange || inferExchange(fhSymbol) || '';
+  return exchange ? `${exchange}:${root}` : root;
+}
+
+/* ========== load stock by symbol helper exported for debug ========== */
+window.loadStock = loadStock;
+
+/* ========== utility wrappers to avoid naming collisions ========== */
+async function fetchQuoteWrapper(sym){ return await safeFetchQuote(sym); }
+
+/* ========== helper functions to show simple login/register modal (client-side) ========== */
+function showLoginRegisterModal(){
+  // We'll show a small modal created via DOM (register + login)
+  const modal = document.createElement('div'); modal.className = 'overlay';
+  modal.innerHTML = `
+    <div class="card" style="width:420px">
+      <h2 class="text-lg font-bold">Sign in / Create account</h2>
+      <div class="muted small">Students: register with email & password and the school code (keeps site access restricted).</div>
+      <div style="margin-top:8px"><input id="lrName" class="input w-full" placeholder="Display name (e.g. Ravi)"></div>
+      <div style="margin-top:8px"><input id="lrEmail" class="input w-full" placeholder="Email"></div>
+      <div style="margin-top:8px"><input id="lrPass" class="input w-full" placeholder="Password (min 6 chars)" type="password"></div>
+      <div style="margin-top:8px"><input id="lrCode" class="input w-full" placeholder="School code"></div>
+      <div style="display:flex;gap:8px;margin-top:10px"><button id="lrSignup" class="btn">Sign up</button><button id="lrLogin" class="btn-ghost">Log in</button></div>
+      <div style="margin-top:8px" class="muted small">If you are admin click the Admin button in header to sign in.</div>
+    </div>`;
+  document.body.appendChild(modal);
+
+  modal.querySelector('#lrSignup').addEventListener('click', async ()=>{
+    const name = modal.querySelector('#lrName').value.trim();
+    const email = modal.querySelector('#lrEmail').value.trim();
+    const pass = modal.querySelector('#lrPass').value;
+    const code = modal.querySelector('#lrCode').value.trim();
+    if(!name || !email || !pass || !code) return alert('Fill all fields');
+    if(code !== SCHOOL_CODE) return alert('Invalid school code');
+    try{
+      const cu = await createUserWithEmailAndPassword(auth, email, pass);
+      // set displayName
+      await updateProfile(cu.user, { displayName: name });
+      // create user doc
+      await setDoc(doc(db,'users', cu.user.uid), { name, email, balance: STARTING_BALANCE, holdings:{}, trades:[], createdAt: serverTimestamp() });
+      alert('Account created — signed in.');
+      modal.remove();
+    }catch(e){ alert('Signup error: ' + e.message); }
+  });
+
+  modal.querySelector('#lrLogin').addEventListener('click', async ()=>{
+    const email = modal.querySelector('#lrEmail').value.trim();
+    const pass = modal.querySelector('#lrPass').value;
+    if(!email || !pass) return alert('Fill email & password');
+    try{
+      await signInWithEmailAndPassword(auth, email, pass);
+      modal.remove();
+    }catch(e){ alert('Login failed: ' + e.message); }
+  });
+}
+
+/* ========== debug helpers: expose small functions for console debugging ========== */
+window._debug = { fetchQuoteWrapper, fhSearch, loadStock };
+
+/* ========== Final notes ==========
+  - Replace FIREBASE_CONFIG and FINNHUB_KEY at top before deploying.
+  - Create admin user (Authentication -> Add user) with email = ADMIN_EMAIL and chosen password.
+  - Add your GitHub Pages domain to Firebase Auth Authorized Domains (see instructions below).
+====================================================================== */
+</script>
+</body>
+</html>
